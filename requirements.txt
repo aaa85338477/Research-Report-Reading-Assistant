@@ -1,0 +1,8 @@
+# Web 框架与前端交互
+streamlit==1.32.0
+
+# HTTP 请求库 
+requests==2.31.0
+
+# PDF 解析库 (推荐 PyMuPDF，提取速度快，对排版支持好)
+PyMuPDF==1.23.26
