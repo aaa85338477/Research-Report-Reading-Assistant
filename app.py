@@ -56,8 +56,8 @@ def extract_pdf_structure(uploaded_file):
     except Exception as e:
         return f"解析 PDF 目录失败: {e}"
 
-def extract_pdf_text(uploaded_file, max_pages=5):
-    """提取 PDF 正文内容（默认提取前 max_pages 页）"""
+def extract_pdf_text(uploaded_file, max_pages=15):
+    """提取 PDF 正文内容（默认提取前 15 页，兼顾内容完整度与 Token 消耗）"""
     try:
         uploaded_file.seek(0) 
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
@@ -73,7 +73,7 @@ def extract_pdf_text(uploaded_file, max_pages=5):
 # ==========================================
 st.set_page_config(page_title="AI 深度阅读与拆解引擎", page_icon="📚", layout="wide")
 
-# 初始化所有的 Session State，确保页面刷新时数据不丢失
+# 初始化所有的 Session State，确保页面刷新时核心数据不丢失
 if "auto_structure" not in st.session_state:
     st.session_state.auto_structure = ""
 if "generated_prompt" not in st.session_state:
@@ -181,15 +181,15 @@ if st.button("🚀 开始深度拆解 (Execute Analysis)"):
     elif not edited_prompt:
         st.error("⚠️ 拆解指令为空，请先完成 Step 2！")
     else:
-        with st.spinner("🤖 引擎 B 正在通读正文并执行结构化拆解 (演示模式仅提取前5页)..."):
+        with st.spinner("🤖 引擎 B 正在通读正文并执行结构化拆解 (演示模式提取前15页)..."):
             
             # 1. 真实提取 PDF 正文文本并存入 session_state
-            st.session_state.extracted_text = extract_pdf_text(uploaded_file, max_pages=5)
+            st.session_state.extracted_text = extract_pdf_text(uploaded_file, max_pages=15)
             
             if not st.session_state.extracted_text.strip():
                 st.error("⚠️ 无法从 PDF 中提取到有效文本，可能是扫描版或已加密。")
             else:
-                # 2. 调用引擎 B 进行最终总结，要求结尾不反问
+                # 2. 调用引擎 B 进行最终总结，强制要求结尾不反问，约束 AI 对话本能
                 execute_prompt = edited_prompt + "\n\n【重要纪律要求】：报告结尾必须干脆利落，严禁在最后提出反问、寒暄或询问用户是否需要进一步解答。"
                 
                 final_report = call_ai_api(
@@ -201,11 +201,11 @@ if st.button("🚀 开始深度拆解 (Execute Analysis)"):
                 # 3. 将生成的报告存入 session_state
                 st.session_state.final_report = final_report
                 
-                # 4. 初始化一句欢迎提问的开场白
-                st.session_state.chat_history = [{"role": "assistant", "content": "您好！报告已拆解完毕。关于上述内容，您有任何想要深入探讨的细节吗？"}]
+                # 4. 初始化一句欢迎提问的开场白，自然过渡到 Step 4
+                st.session_state.chat_history = [{"role": "assistant", "content": "您好！报告已基于前15页的核心内容拆解完毕。关于上述内容，或者文档中提到的具体概念，您有任何想要深入探讨的细节吗？"}]
                 st.success("✅ 拆解完成！")
 
-# 如果已经生成了报告，则展示报告内容
+# 只要生成了报告，就展示出来
 if st.session_state.final_report:
     st.markdown("### 📊 最终结构化研报")
     st.markdown(st.session_state.final_report)
@@ -213,7 +213,7 @@ if st.session_state.final_report:
 # ------------------------------------------
 # Step 4: 针对研报的深度追问 (Interactive Q&A)
 # ------------------------------------------
-# 只有当提取了文本并生成了报告后，才渲染聊天模块
+# 只有当提取了文本并生成了报告后，才渲染底部的聊天模块
 if st.session_state.extracted_text and st.session_state.final_report:
     st.markdown("---")
     st.header("Step 4: 深度追问 (Interactive Q&A)")
@@ -223,7 +223,7 @@ if st.session_state.extracted_text and st.session_state.final_report:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # 聊天输入框 (st.chat_input 默认固定在页面底部)
+    # 聊天输入框 (st.chat_input 默认固定在页面底部，体验极佳)
     user_question = st.chat_input("针对刚才的研报，输入你想深入了解的问题...")
 
     if user_question:
@@ -238,7 +238,7 @@ if st.session_state.extracted_text and st.session_state.final_report:
             # 2. 显示 AI 的思考状态与回答
             with st.chat_message("assistant"):
                 with st.spinner("正在检索文档上下文并思考..."):
-                    # 构建包含文档上下文的 Prompt
+                    # 构建包含文档上下文的 QA Prompt，强力抑制幻觉
                     qa_system_prompt = "你是一位专业的业务研究助理。请严格基于用户提供的【文档上下文】回答问题。如果文档中没有相关信息，请明确告知，切勿根据自己的知识库盲目编造。"
                     
                     qa_user_prompt = f"""
