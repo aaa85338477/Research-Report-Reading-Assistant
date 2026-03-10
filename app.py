@@ -1,9 +1,10 @@
 import streamlit as st
 import requests
 import json
+import fitz  # PyMuPDF，用于解析 PDF 目录和提取文本
 
 # ==========================================
-# 核心 API 调用函数 (适配中转站与页面输入的 Key)
+# 核心通信模块：调用大模型 API
 # ==========================================
 def call_ai_api(api_key, system_prompt, user_prompt):
     """
@@ -12,7 +13,7 @@ def call_ai_api(api_key, system_prompt, user_prompt):
     url = "https://api.bltcy.ai/v1/chat/completions"
     headers = {
         'Accept': 'application/json',
-        'Authorization': f'Bearer {api_key}', # 动态接收页面输入的 Key
+        'Authorization': f'Bearer {api_key}', 
         'User-Agent': 'DMXAPI/1.0.0',
         'Content-Type': 'application/json'
     }
@@ -20,86 +21,132 @@ def call_ai_api(api_key, system_prompt, user_prompt):
     payload = json.dumps({
         "model": "gemini-3.1-flash-lite-preview",
         "messages": [
-            {
-                "role": "system",
-                "content": system_prompt
-            },
-            {
-                "role": "user",
-                "content": user_prompt
-            }
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
         ]
     })
     
     try:
         response = requests.post(url, headers=headers, data=payload)
-        response.raise_for_status() # 检查 HTTP 错误
+        response.raise_for_status() 
         result = response.json()
         return result['choices'][0]['message']['content']
     except Exception as e:
         return f"❌ API 请求失败，请检查网络或 API Key 是否正确。\n错误详情: {e}"
 
 # ==========================================
-# 页面配置与初始化
+# 核心处理模块：PDF 智能解析
+# ==========================================
+def extract_pdf_structure(uploaded_file):
+    """提取 PDF 原生目录树"""
+    try:
+        uploaded_file.seek(0) # 确保指针在开头
+        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        toc = doc.get_toc() 
+        
+        if toc:
+            structure_text = ""
+            for item in toc:
+                level, title, page = item
+                indent = "  " * (level - 1)
+                structure_text += f"{indent}- {title} (第{page}页)\n"
+            return structure_text
+        else:
+            return "⚠️ 未检测到 PDF 原生书签。请在此手动输入，或简述文档大纲..."
+    except Exception as e:
+        return f"解析 PDF 目录失败: {e}"
+
+def extract_pdf_text(uploaded_file, max_pages=5):
+    """提取 PDF 正文内容（为控制演示耗时和 Token，默认提取前 max_pages 页）"""
+    try:
+        uploaded_file.seek(0) 
+        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+        text = ""
+        # 提取指定页数的内容
+        for i in range(min(max_pages, len(doc))):
+            text += doc[i].get_text()
+        return text
+    except Exception as e:
+        return f"提取正文失败: {e}"
+
+# ==========================================
+# UI 页面配置与状态初始化
 # ==========================================
 st.set_page_config(page_title="AI 深度阅读与拆解引擎", page_icon="📚", layout="wide")
 
+# 初始化 Session State
+if "auto_structure" not in st.session_state:
+    st.session_state.auto_structure = ""
 if "generated_prompt" not in st.session_state:
     st.session_state.generated_prompt = ""
 
 # ==========================================
-# 侧边栏：全局设置 (API Key 输入区)
+# 侧边栏：全局设置与安全认证
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 全局设置")
-    # 让用户在页面上输入 API Key
-    api_key = st.text_input("请输入 API Key", type="password", help="你的 Key 仅在本次会话中有效，不会被保存。")
+    api_key = st.text_input("🔑 请输入 API Key", type="password", help="仅在当前会话有效，安全且不会被记录。")
     
     st.markdown("---")
-    st.markdown("### 🛠 模型配置")
-    st.markdown("- **API 中转**: bltcy.ai")
-    st.markdown("- **当前模型**: gemini-3.1-flash-lite-preview")
+    st.markdown("### 🛠 引擎状态")
+    st.markdown("- **解析引擎**: PyMuPDF")
+    st.markdown("- **推理模型**: gemini-3.1-flash-lite-preview")
+    st.markdown("- **架构模式**: Meta-Prompting 双引擎")
 
 # ==========================================
-# 主页面：双引擎交互区
+# 主页面：业务流转区
 # ==========================================
 st.title("📚 AI 深度阅读与拆解引擎")
+st.markdown("> **设计理念**：针对复杂研报与专业书籍，摒弃粗暴的“全文总结”，采用**结构感知 (Structure-Aware)** 机制，顺应文档原生骨架进行业务级维度的深度拆解。")
 st.markdown("---")
 
 # ------------------------------------------
-# 步骤一：定义目标 (Engine A 生成动态指令)
+# Step 1: 文档上传与结构解析
 # ------------------------------------------
-st.header("Step 1: 定义文档元信息")
-col1, col2 = st.columns(2)
+st.header("Step 1: 上传文档与智能解析")
 
+uploaded_file = st.file_uploader("📂 请上传需要拆解的 PDF 研报或书籍", type=["pdf"])
+
+if uploaded_file:
+    if st.button("🔍 自动提取文档骨架", type="secondary"):
+        with st.spinner("正在解析 PDF 原生目录..."):
+            st.session_state.auto_structure = extract_pdf_structure(uploaded_file)
+            st.success("✅ 骨架提取完成！请在下方核对并补充信息。")
+
+col1, col2 = st.columns(2)
 with col1:
-    doc_title = st.text_input("文档名称", placeholder="例如：How To Be A Games User Researcher")
+    doc_title = st.text_input("文档名称", placeholder="例如：海外休闲游戏买量白皮书")
     doc_type = st.selectbox("文档类型", ["专业方法论书籍", "市场/竞品研报", "长篇深度分析文章", "其他"])
 
 with col2:
-    user_intent = st.text_input("您的核心诉求", placeholder="例如：学习不同阶段的测试方法及流程")
+    user_intent = st.text_input("🎯 您的核心诉求", placeholder="例如：重点关注 LTV 模型构建和买量成本测算")
 
-doc_structure = st.text_area("原生结构 (目录/大纲)", height=150, 
-                             placeholder="请粘贴书籍目录或报告大纲...\n例如：\n第一章：什么是游戏用研\n第二章：立项期的测试方法")
+doc_structure = st.text_area("原生结构 (AI 已自动提取，支持手动微调)", 
+                             value=st.session_state.auto_structure,
+                             height=180)
 
-if st.button("✨ 生成专属阅读框架 (Generate Meta-Prompt)", type="primary"):
+# ------------------------------------------
+# Step 2: 引擎 A - 生成专属阅读框架
+# ------------------------------------------
+st.markdown("---")
+st.header("Step 2: 引擎 A - 生成专属拆解指令")
+
+if st.button("✨ 基于骨架与诉求生成专属指令 (Generate Meta-Prompt)", type="primary"):
     if not api_key:
         st.warning("⚠️ 请先在左侧边栏输入 API Key！")
     elif not doc_title or not doc_structure:
-        st.warning("⚠️ 请至少填写「文档名称」和「原生结构」！")
+        st.warning("⚠️ 请确保「文档名称」和「原生结构」已填写！")
     else:
-        with st.spinner("🧠 引擎 A 正在思考，为您定制阅读框架..."):
-            # 构造 Meta-Prompt 的系统指令
-            system_prompt = "你是一位顶级的 AI 知识架构师。你的任务是根据用户提供的书籍信息及其【原生结构】，动态生成一段用于“深度阅读与拆解”的专属 Prompt。请严格按照要求输出拆解框架，不需要任何废话。"
+        with st.spinner("🧠 引擎 A 正在动态构筑阅读框架..."):
+            system_prompt = "你是一位顶级的 AI 知识架构师。你的任务是根据用户提供的文档信息及其【原生结构】，动态生成一段用于“深度阅读与拆解”的专属 Prompt。请严格按照要求输出拆解框架，不需要任何废话。"
             
-            # 构造用户输入的内容
             user_prompt = f"""
             - 文档名称：{doc_title}
             - 文档类型：{doc_type}
             - 核心诉求：{user_intent}
-            - 原生结构：{doc_structure}
+            - 原生结构：\n{doc_structure}
             
-            请顺应原生结构逻辑，并紧密结合用户的核心诉求，生成拆解指令。格式如下：
+            请顺应原生结构逻辑，并紧密结合用户的核心诉求，生成拆解指令。格式严格如下：
             【系统指令】：你现在是一位资深阅读助手。请牢记用户的核心诉求：{user_intent}。
             【拆解路径与重点】：
             - 第一部分：[原书章节名] -> 重点提取：[结合诉求生成的提取目标]
@@ -107,51 +154,43 @@ if st.button("✨ 生成专属阅读框架 (Generate Meta-Prompt)", type="primar
             ...
             """
             
-            # 调用封装好的 API 函数
-            ai_response = call_ai_api(api_key, system_prompt, user_prompt)
-            st.session_state.generated_prompt = ai_response
-            st.success("✅ 专属阅读框架已生成！")
+            st.session_state.generated_prompt = call_ai_api(api_key, system_prompt, user_prompt)
+            st.success("✅ 专属阅读指令已生成！这是 AI 在阅读前形成的“心智模型”。")
 
-# ------------------------------------------
-# 步骤二：框架微调 (Human-in-the-loop)
-# ------------------------------------------
-st.header("Step 2: 框架微调 (Human-in-the-loop)")
-st.info("💡 下方是 AI 动态生成的指令。您可以直接在框内修改它。")
-
+st.info("💡 下方是引擎 A 动态生成的指令。引入 **Human-in-the-loop** 机制，您可以直接在框内修改它，进行最终干预。")
 edited_prompt = st.text_area("专属拆解指令 (可编辑)", 
                              value=st.session_state.generated_prompt, 
-                             height=250)
+                             height=200)
 
 # ------------------------------------------
-# 步骤三：执行阅读 (Engine B 拆解文档)
+# Step 3: 引擎 B - 执行深度拆解
 # ------------------------------------------
 st.markdown("---")
-st.header("Step 3: 上传文档并执行拆解")
-
-uploaded_file = st.file_uploader("上传 PDF 样章 或 TXT 文件", type=["pdf", "txt"])
+st.header("Step 3: 引擎 B - 执行深度拆解")
 
 if st.button("🚀 开始深度拆解 (Execute Analysis)"):
     if not api_key:
         st.error("⚠️ 请先在左侧边栏输入 API Key！")
     elif not uploaded_file:
-        st.error("⚠️ 请先上传要拆解的文档！")
+        st.error("⚠️ 找不到 PDF 文件，请重新上传！")
     elif not edited_prompt:
-        st.error("⚠️ 拆解指令不能为空，请先完成 Step 1。")
+        st.error("⚠️ 拆解指令为空，请先完成 Step 2！")
     else:
-        with st.spinner("🤖 引擎 B 正在深度阅读与拆解中..."):
+        with st.spinner("🤖 引擎 B 正在通读正文并执行结构化拆解 (演示模式仅提取前5页)..."):
             
-            # --- 这里模拟读取文件的文本 ---
-            # 实际项目中这里需要用 PyMuPDF(fitz) 或 pdfplumber 来提取 PDF 文本
-            # 目前我们先假设提取到了第一页的内容作为演示
-            mock_extracted_text = "这里是程序从 PDF/TXT 中提取出的文本内容..." 
+            # 1. 真实提取 PDF 正文文本
+            extracted_text = extract_pdf_text(uploaded_file, max_pages=5)
             
-            # 调用 API 进行拆解 (Engine B)
-            final_report = call_ai_api(
-                api_key=api_key,
-                system_prompt=edited_prompt, # 把刚刚生成的、用户确认过的 Prompt 当作系统指令
-                user_prompt=f"请根据系统指令拆解以下内容：\n\n{mock_extracted_text}"
-            )
-            
-            st.success("✅ 拆解完成！")
-            st.markdown("### 📊 拆解结果展示")
-            st.markdown(final_report)
+            if not extracted_text.strip():
+                st.error("⚠️ 无法从 PDF 中提取到有效文本，可能是扫描版或已加密。")
+            else:
+                # 2. 调用引擎 B 进行最终总结
+                final_report = call_ai_api(
+                    api_key=api_key,
+                    system_prompt=edited_prompt, # 使用用户确认过的专属指令
+                    user_prompt=f"请严格根据系统指令，拆解以下文档内容：\n\n{extracted_text}"
+                )
+                
+                st.success("✅ 拆解完成！")
+                st.markdown("### 📊 最终结构化研报")
+                st.markdown(final_report)
